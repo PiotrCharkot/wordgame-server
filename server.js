@@ -9,6 +9,7 @@ const cors = require("cors");
 const { connectDB, mongoose } = require("./config/database");
 const Grid = require("./models/Grid");
 const Ranking = require("./models/Ranking");
+let currentGrid = null;
 
 // --- Express + HTTP + Socket.IO
 const app = express();
@@ -48,12 +49,35 @@ let mobilePlayersCount = 0;
 let clockCounter = 135;
 let lastGrid = null;
 
+
+async function chooseNewGrid() {
+  try {
+    const [doc] = await Grid.aggregate([{ $sample: { size: 1 } }]);
+    if (doc) {
+      currentGrid = doc;
+      console.log("New grid chosen for round:", doc._id?.toString?.() ?? "(no id)");
+    } else {
+      console.warn("No grid documents found in DB!");
+    }
+  } catch (err) {
+    console.error("Error choosing new grid:", err);
+  }
+}
+
+
+
+
 // --- GAME LOOP (tick every second)
 setInterval(async () => {
   clockCounter--;
 
   // Broadcast the clock to clients
   io.emit("clock", clockCounter);
+
+
+  if (clockCounter === 5) {
+    await chooseNewGrid();
+  }
 
   if (clockCounter === 50) {
     // “closing soon” stage; reset per-round lists
@@ -99,17 +123,17 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "main.html"));
 });
 
-// send a random grid + current clock
-app.get("/grid", async (req, res) => {
+// send a current grid + current clock
+app.get("/grid", (req, res) => {
   try {
-    const [doc] = await Grid.aggregate([{ $sample: { size: 1 } }]);
-
-    if (!doc) {
-      return res.status(404).json({ error: "No grid found" });
+    if (!currentGrid) {
+      // In the unlikely case grid isn't ready yet
+      return res.status(503).json({ error: "Grid not ready" });
     }
 
-    const payload = { ...doc, clockCounter }; // 👈 no .toObject()
-
+    // If currentGrid is a Mongoose document, you can call .toObject()
+    // but since we used aggregate, it's already a plain object.
+    const payload = { ...currentGrid, clockCounter };
     res.json(payload);
   } catch (e) {
     console.error(e);
@@ -187,6 +211,7 @@ app.get("/gettingPoints", async (req, res) => {
 // --- start
 (async () => {
   await connectDB();
+  await chooseNewGrid();
   const port = process.env.PORT || 3000;
   http.listen(port, () => console.log(`listening at ${port}`));
 })();
